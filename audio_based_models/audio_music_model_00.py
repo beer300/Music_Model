@@ -40,19 +40,20 @@ class Discriminator(nn.Module):
         return out.view(-1, 1)
     
 class Generator(nn.Module):
-    def __init__(self, latent_dim=700):
+    def __init__(self, latent_dim=200):
         super().__init__()
         self.latent_dim = latent_dim
         
         self.main = nn.Sequential(
             
-            nn.Upsample(scale_factor=(2), mode='bilinear'),
-            nn.Conv2d(latent_dim//2 , 2048, kernel_size=3, stride=1, padding=1),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(latent_dim//2, 2048, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(2048),
             nn.ReLU(True),
             nn.Dropout(0.5),
-
-            nn.ConvTranspose2d(2048, 1024, kernel_size=4, stride=2, padding=1),
+            
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(2048, 1024, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(1024),
             nn.ReLU(True),
             nn.Dropout(0.5),
@@ -81,11 +82,26 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
 
+            nn.ConvTranspose2d(64, 32, kernel_size=(1,22), stride=1, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+
+            nn.Upsample(scale_factor=(1,3), mode='bilinear'),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+
+
+
+
+
             
         )
         self.final = nn.Sequential(
             
-            nn.Conv2d(64, 1, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
             nn.Sigmoid()
         )
     def forward(self, z):
@@ -113,7 +129,7 @@ class GAN(pl.LightningModule):
         self.automatic_optimization = False
         self.generator = Generator(latent_dim=self.hparams.latent_dim)
         self.discriminator = Discriminator(in_channels=4)
-        self.validation_z = torch.randn(1, self.hparams.latent_dim, 1, 2)
+        self.validation_z = torch.randn(1, self.hparams.latent_dim, 1, 7)
     def forward(self, z):
         return self.generator(z)
     def adversarial_loss(self, y_hat, y):
@@ -121,7 +137,7 @@ class GAN(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         opt_d, opt_g = self.optimizers()
         real_imgs = batch
-        z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, 1, 2).type_as(real_imgs)
+        z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, 1, 7).type_as(real_imgs)
         fake_imgs = self(z).detach()
         y_hat_real = self.discriminator(real_imgs)
         y_hat_fake = self.discriminator(fake_imgs)
@@ -131,7 +147,7 @@ class GAN(pl.LightningModule):
         self.manual_backward(d_loss)
         opt_d.step()
         opt_d.zero_grad()
-        z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, 1, 2).type_as(real_imgs)
+        z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, 1, 7).type_as(real_imgs)
         fake_imgs = self(z)
         y_hat = self.discriminator(fake_imgs)
         g_loss = self.adversarial_loss(y_hat, torch.ones_like(y_hat))
@@ -142,7 +158,7 @@ class GAN(pl.LightningModule):
         self.log('g_loss', g_loss, prog_bar=True, on_epoch=True)
     def validation_step(self, batch, batch_idx):
         real_imgs = batch
-        z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, 1, 2).type_as(real_imgs)
+        z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, 1, 7).type_as(real_imgs)
         fake_imgs = self(z)
         y_hat_real = self.discriminator(real_imgs)
         y_hat_fake = self.discriminator(fake_imgs)
@@ -212,7 +228,7 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
     model = GAN(
-        latent_dim=700,
+        latent_dim=200,
         lr=0.001,
         sample_rate=48000
     )
