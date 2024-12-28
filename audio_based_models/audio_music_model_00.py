@@ -52,8 +52,8 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
             
-            nn.Upsample(scale_factor=2, mode='bilinear'),
-            nn.Conv2d(2048, 1024, kernel_size=3, stride=1, padding=1),
+            
+            nn.ConvTranspose2d(2048, 1024, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(1024),
             nn.ReLU(True),
             nn.Dropout(0.5),
