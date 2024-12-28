@@ -1,10 +1,24 @@
-from torch import nn
-
+import os
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, random_split
+import torchvision.transforms as transforms
+from PIL import Image
+import numpy as np
+import torchaudio   
+import matplotlib.pyplot as plt
+from scipy.io.wavfile import write
+import os
+import dataset_processing as dp 
+BATCH_SIZE = 8
 class Discriminator(nn.Module):
     def __init__(self, in_channels=1):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Conv2d(in_channels, 16, kernel_size=4, stride=2, padding=1),
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(32),
@@ -18,20 +32,22 @@ class Discriminator(nn.Module):
             nn.Sigmoid()
         )
     def forward(self, x):
+        print(f"x in", x.shape)
 
         out = self.model(x)
+        print(f"x out", x.shape)
 
         return out.view(-1, 1)
     
 class Generator(nn.Module):
-    def __init__(self, latent_dim=100):
+    def __init__(self, latent_dim=700):
         super().__init__()
         self.latent_dim = latent_dim
         
         self.main = nn.Sequential(
             
-            nn.Upsample(scale_factor=3, mode='bilinear'),
-            nn.Conv2d(2048, 2048, kernel_size=3, stride=1, padding=1),
+            nn.Upsample(scale_factor=(2), mode='bilinear'),
+            nn.Conv2d(latent_dim//2 , 2048, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(2048),
             nn.ReLU(True),
             nn.Dropout(0.5),
@@ -41,7 +57,7 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=3, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
             nn.Conv2d(1024, 512, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
@@ -54,38 +70,43 @@ class Generator(nn.Module):
             nn.Dropout(0.5),
 
             nn.Upsample(scale_factor=2, mode='bilinear'),
-            nn.Conv2d(256, 128, kernel_size=2, stride=1, padding=1),
+            nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=2),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(True),
             nn.Dropout(0.5),
+
             
         )
         self.final = nn.Sequential(
             
-            nn.ConvTranspose2d(16, 4, kernel_size=(16,16), stride=(8,8), padding=(4,4)),
+            nn.Conv2d(64, 1, kernel_size=3, stride=1, padding=1),
             nn.Sigmoid()
         )
-        def forward(self, z):
-       
-        z = z.view(-1, self.latent_dim//2, 1, 2)
-        
+    def forward(self, z):
+        print(f"z in", z.shape)
+        z = z.view(-1, self.latent_dim//2, 1, 7)
+        print(f"z out", z.shape)
         x = self.main(z)
-       
+        print(f"x in", x.shape)
         x = self.final(x)
+        print(f"x out", x.shape)
         
        
         return x
-    
+
+
+
 class GAN(pl.LightningModule):
     def _write_disk_spectrogram(self, path, dpi=120):
         plt.savefig(path, dpi=dpi, bbox_inches='tight', pad_inches=0)
         plt.close()
-    def __init__(self, latent_dim=400, lr=0.0002, sample_rate=48000):
+    def __init__(self, latent_dim=200, lr=0.0002, sample_rate=48000):
         super().__init__()
         self.hparams.latent_dim = latent_dim
         self.save_hyperparameters()
@@ -140,51 +161,80 @@ class GAN(pl.LightningModule):
     def on_validation_epoch_end(self):
         z = self.validation_z.type_as(self.generator.main[1].weight)
         spec = self.generator(z)[0, 0].detach().cpu().numpy()
-        spec = self._center_crop_or_pad(spec, target_h=1164, target_w=2364)
-
-        plt.figure(figsize=(16, 8))
-        plt.imshow(librosa.amplitude_to_db(spec, ref=np.max), cmap='inferno', origin='lower')
-        plt.colorbar(format='%+2.0f dB')
-        plt.title(f'Spectrogram - Epoch {self.current_epoch}')
-        plt.tight_layout()
-        png_old_path = os.path.join('/content/drive/My Drive/data/generated_old_spectrograms_model_03', f"epoch{self.current_epoch}_old_spectrogram.png")
-        plt.savefig(png_old_path, bbox_inches='tight')
-        plt.close()
-
-
-        plt.figure(figsize=(20, 10))  # Changed from (16, 8) to match audio class
-        librosa.display.specshow(spec, sr=self.hparams.sample_rate, hop_length=1024, x_axis='time', y_axis='log')
-        plt.axis('off')
-        plt.tight_layout()
-
-        png_path = os.path.join('/content/drive/My Drive/data/generated_spectrograms_model_03', f"epoch{self.current_epoch}_spectrogram.png")
-        self._write_disk_spectrogram(png_path)
-
-        image = Image.open(png_path)
-        image = image.resize((2364, 1164))  # Resize to specified dimensions
-        image = image.convert('L')  # Convert to grayscale
-
-        # Normalize pixel data to range [-1, 1]
-        pixel_data = np.array(image)
-        normalized_data = (pixel_data / 255.0) * 2 - 1
-
-        # Flatten the image data to a 1D array
-        audio_data = normalized_data.flatten()
-
-        # Scale the data to fit the hop length
+        
+        # Initialize and normalize audio data
+        audio_data = spec.flatten()
         audio_data = np.interp(audio_data, (audio_data.min(), audio_data.max()), [-1, 1])
-
-        # Repeat or pad to make it a valid waveform for WAV
+        
+        # Set audio parameters
+        sample_rate = 48000
+        duration = 30
+        
+        # Prepare waveform with proper length
         total_samples = sample_rate * duration
         audio_data = np.tile(audio_data, int(np.ceil(total_samples / len(audio_data))))[:total_samples]
-
-        # Convert to 16-bit PCM format
+        
+        # Safe conversion to 16-bit PCM
+        
         audio_data = (audio_data * 32767).astype(np.int16)
-
-        # Save as a WAV file
-
-        wav_path = os.path.join('/content/drive/My Drive/data/generated_audio_model_03', f"epoch{self.current_epoch}_sample.wav")
+        
+        # Save WAV file
+        wav_path = os.path.join(r'C:\Users\Lukasz\Music\generated', f"epoch{self.current_epoch}_sample.wav")
+        os.makedirs(os.path.dirname(wav_path), exist_ok=True)
         write(wav_path, sample_rate, audio_data)
-
-        print(f"[INFO] Saved spectrogram to {png_path}")
+        
         print(f"[INFO] Saved audio to {wav_path}")
+
+if __name__ == "__main__":
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import ModelCheckpoint
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    torch.manual_seed(42)
+    AUDIO_DIR = r"C:\Users\Lukasz\Music\chopped_30"
+    SAMPLE_RATE = 48000
+    NUM_SAMPLES = 1440000
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    mel_spectrogram = torchaudio.transforms.MelSpectrogram(
+        sample_rate=SAMPLE_RATE,
+        n_fft=1024,
+        hop_length=1024,
+        n_mels=64
+    )
+    full_dataset = dp.AudioDataset(
+                            AUDIO_DIR,
+                            mel_spectrogram,
+                            SAMPLE_RATE,
+                            NUM_SAMPLES,
+                            device)
+    train_size = int(0.8 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+    train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    model = GAN(
+        latent_dim=700,
+        lr=0.001,
+        sample_rate=48000
+    )
+    checkpoint_callback = ModelCheckpoint(
+        dirpath="checkpoints",
+        filename="gan-{epoch:02d}-{val_g_loss:.2f}",
+        save_top_k=-1,
+        verbose=True,
+        monitor="val_g_loss",
+        mode="min",
+        save_weights_only=True,
+        every_n_epochs=1
+    )
+    trainer = pl.Trainer(
+        max_epochs=200,
+        accelerator="gpu",
+        devices=1,
+        precision=16,
+        callbacks=[checkpoint_callback]
+    )
+    trainer.fit(
+        model,
+        train_dataloaders=train_dataloader,
+        val_dataloaders=val_dataloader
+    )
