@@ -67,8 +67,8 @@ if __name__ == "__main__":
     mel_spectrogram = torchaudio.transforms.MelSpectrogram(
         sample_rate=SAMPLE_RATE,
         n_fft=1024,
-        hop_length=512,
-        n_mels=128
+        hop_length=1024,
+        n_mels=64
     )
 
     dataset = AudioDataset(
@@ -80,4 +80,5 @@ if __name__ == "__main__":
     )
     
     print(f"There are {len(dataset)} samples in the dataset.")
+    print(f"Sample shape: {dataset[0].shape}")
   
