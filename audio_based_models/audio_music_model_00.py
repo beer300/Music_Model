@@ -94,14 +94,14 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
             nn.Upsample(size=(64, 1407), mode='bilinear'), 
-            nn.Conv2d(16,8, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(16,1, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(1),
             nn.ReLU(True),
             nn.Dropout(0.5),  
         )
         self.final = nn.Sequential(
             
-            nn.LSTM(input_size=8, hidden_size=1024, batch_first=True),
+            nn.LSTM(input_size=1, hidden_size=1024, batch_first=True),
             
         )
     def forward(self, z):
