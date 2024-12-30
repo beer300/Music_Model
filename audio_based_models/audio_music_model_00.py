@@ -40,12 +40,12 @@ class Discriminator(nn.Module):
         return out.view(-1, 1)
     
 class Generator(nn.Module):
-    def __init__(self, latent_dim=200):
+    def __init__(self,num_channels=1, latent_dim=200, hidden_dim=512, num_layers=4):
         super().__init__()
         self.latent_dim = latent_dim
-        
+        self.num_channels = num_channels
+        self.sigmoid = nn.Sigmoid()
         self.main = nn.Sequential(
-            
             nn.Upsample(scale_factor=2, mode='bilinear'),
             nn.Conv2d(latent_dim//2, 2048, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(2048),
@@ -76,44 +76,51 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=(1,2), mode='bilinear'),
             nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(True),
             nn.Dropout(0.5),
 
             nn.ConvTranspose2d(64, 32, kernel_size=(1,22), stride=1, padding=1),
+
             nn.BatchNorm2d(32),
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=(1,3), mode='bilinear'),
+            nn.Upsample(scale_factor=3, mode='bilinear'),
             nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(True),
             nn.Dropout(0.5),
-
-
-
-
-
-            
+            nn.Upsample(size=(64, 1407), mode='bilinear'), 
+            nn.Conv2d(16,8, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(1),
+            nn.ReLU(True),
+            nn.Dropout(0.5),  
         )
         self.final = nn.Sequential(
             
-            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
-            nn.Sigmoid()
+            nn.LSTM(input_size=8, hidden_size=1024, batch_first=True),
+            
         )
     def forward(self, z):
+        
         print(f"z in", z.shape)
         z = z.view(-1, self.latent_dim//2, 1, 7)
         print(f"z out", z.shape)
         x = self.main(z)
         print(f"x in", x.shape)
+        x = x.view(x.size(0), -1)  # Flatten for LSTM input
+        print(f"x view", x.shape)
+        # Reshape for LSTM input (batch_size, seq_len, input_size)
+        x = x.view(x.size(0), -1, 1)  # Adjust dimensions for LSTM
+        print(f"x view", x.shape)
         x = self.final(x)
+        print(f"x final", x.shape)
+        x = x[:, -1, :]  # Last time step output
         print(f"x out", x.shape)
-        
-       
+        x = self.sigmoid(x)
         return x
 
 
