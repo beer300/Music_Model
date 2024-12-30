@@ -93,7 +93,7 @@ class Generator(nn.Module):
             nn.BatchNorm2d(16),
             nn.ReLU(True),
             nn.Dropout(0.5),
-            nn.Upsample(size=(64, 1407), mode='bilinear'), 
+            nn.Upsample(size=(16, 350), mode='bilinear'), 
             nn.Conv2d(16,1, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(1),
             nn.ReLU(True),
@@ -105,18 +105,16 @@ class Generator(nn.Module):
             
         )
     def forward(self, z):
-        
         print(f"z in", z.shape)
-        z = z.view(-1, self.latent_dim//2, 1, 7)
+        z = z.view(-1, self.latent_dim // 2, 1, 7)
         print(f"z out", z.shape)
         x = self.main(z)
         print(f"x in", x.shape)
         x = x.view(x.size(0), -1)  # Flatten for LSTM input
         print(f"x view", x.shape)
-        # Reshape for LSTM input (batch_size, seq_len, input_size)
-        x = x.view(x.size(0), -1, 1)  # Adjust dimensions for LSTM
+        x = x.view(x.size(0), -1, 1).contiguous()  # TUTAJ ZMIANA
         print(f"x view", x.shape)
-        x = self.final(x)
+        x, _ = self.final(x)  # TUTAJ ZMIANA
         print(f"x final", x.shape)
         x = x[:, -1, :]  # Last time step output
         print(f"x out", x.shape)
