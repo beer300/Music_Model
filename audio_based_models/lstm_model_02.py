@@ -50,19 +50,56 @@ class Generator(nn.Module):
 
         # Convolutional layers for upsampling
         self.main = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dim, 512, kernel_size=4, stride=1, padding=0),
+            nn.Upsample(scale_factor=(1, 7), mode='bilinear'),
+            nn.Conv2d(hidden_dim, 2048, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(2048),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            
+            
+            nn.ConvTranspose2d(2048, 1024, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(1024, 512, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
-            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),
+            nn.Dropout(0.5),
+
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+            nn.Dropout(0.5),
+
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(True),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.Dropout(0.5),
+
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(True),
-            nn.ConvTranspose2d(64, 1, kernel_size=4, stride=2, padding=1),
+            nn.Dropout(0.5),
+
+            nn.ConvTranspose2d(64, 32, kernel_size=(1,22), stride=1, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Upsample(scale_factor=3, mode='bilinear'),
+            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
+
+
             nn.Tanh()
         )
 
@@ -72,7 +109,9 @@ class Generator(nn.Module):
         lstm_out, _ = self.lstm(z)  # Output: (batch_size, seq_len, hidden_dim)
         lstm_out = lstm_out[:, -1, :]  # Use the last time step
         lstm_out = lstm_out.view(lstm_out.size(0), -1, 1, 1)  # Reshape for ConvTranspose2d
-        return self.main(lstm_out)
+        x = self.main(lstm_out)
+        
+        return x
 
 class GAN(pl.LightningModule):
     def __init__(self, latent_dim=200, lr=0.0002, sample_rate=48000):
@@ -118,28 +157,37 @@ class GAN(pl.LightningModule):
 
         self.log('d_loss', d_loss, prog_bar=True)
         self.log('g_loss', g_loss, prog_bar=True)
-    def validation_step(self, batch, batch_idx):
-        # Generate unique latent vectors for validation with different lengths and heights
-        batch_length = torch.randint(4, 8, (1,)).item()  # Random batch length
-        z = torch.randn(batch_length, self.hparams.latent_dim, 1, 7, device=self.device)
 
+    def validation_step(self, batch, batch_idx):
+        # Generate latent vectors similar to training step
+        batch_length = torch.randint(4, 8, (1,)).item()
+        # Changed: Remove extra dimensions to match training
+        z = torch.randn(batch_length, self.hparams.latent_dim, device=self.device)
+
+        # Generate fake images
         fake_imgs = self(z)
+
         # Scale height (amplitude) dynamically
-        scale_factor = torch.rand(1).item() * 2 + 0.5  # Random scaling between 0.5 and 2.5
+        scale_factor = torch.rand(1).item() * 2 + 0.5
         fake_imgs = fake_imgs * scale_factor
 
+        # Use actual batch size for real images
         y_hat_real = self.discriminator(batch[:batch_length])
         y_hat_fake = self.discriminator(fake_imgs)
+
+        # Calculate losses
         real_loss = self.adversarial_loss(y_hat_real, torch.ones_like(y_hat_real))
         fake_loss = self.adversarial_loss(y_hat_fake, torch.zeros_like(y_hat_fake))
         d_loss = 0.5 * (real_loss + fake_loss)
 
-        y_hat = self.discriminator(fake_imgs)
-        g_loss = self.adversarial_loss(y_hat, torch.ones_like(y_hat))
+        # Generator loss
+        g_loss = self.adversarial_loss(y_hat_fake, torch.ones_like(y_hat_fake))
 
+        # Log metrics
         self.log('val_d_loss', d_loss, prog_bar=True)
         self.log('val_g_loss', g_loss, prog_bar=True)
 
+        return {'val_loss': d_loss + g_loss}
 
     def on_validation_epoch_end(self):
         # Generate unique batches for the final audio
@@ -172,7 +220,7 @@ class GAN(pl.LightningModule):
         combined_audio = (combined_audio * 32767).astype(np.int16)
 
         # Save WAV file
-        wav_path = os.path.join("generated_music", f"epoch{self.current_epoch}_lstm_beats.wav")
+        wav_path = os.path.join(r'C:\Users\Lukasz\Music\generated', f"epoch{self.current_epoch}_lstm_beats.wav")
         os.makedirs(os.path.dirname(wav_path), exist_ok=True)
         write(wav_path, self.sample_rate, combined_audio)
 
