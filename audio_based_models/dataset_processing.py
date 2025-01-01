@@ -16,6 +16,9 @@ class AudioDataset(Dataset):
         self.target_sample_rate = target_sample_rate
         self.num_samples = num_samples
         self.audio_files = [f for f in os.listdir(audio_dir) if f.endswith('.wav')]
+        
+        # Move resampler to the correct device
+        self.resampler = None
 
     def __len__(self):
         return len(self.audio_files)
@@ -46,8 +49,10 @@ class AudioDataset(Dataset):
 
     def _resample_if_necessary(self, signal, sr):
         if sr != self.target_sample_rate:
-            resampler = torchaudio.transforms.Resample(sr, self.target_sample_rate)
-            signal = resampler(signal)
+            if self.resampler is None:
+                self.resampler = torchaudio.transforms.Resample(sr, self.target_sample_rate).to(self.device)
+            signal = signal.to(self.device)  # Move signal to same device as resampler
+            signal = self.resampler(signal)
         return signal
 
     def _mix_down_if_necessary(self, signal):
@@ -67,7 +72,7 @@ if __name__ == "__main__":
     mel_spectrogram = torchaudio.transforms.MelSpectrogram(
         sample_rate=SAMPLE_RATE,
         n_fft=1024,
-        hop_length=1024,
+        hop_length=512,
         n_mels=64
     )
 
@@ -81,4 +86,3 @@ if __name__ == "__main__":
     
     print(f"There are {len(dataset)} samples in the dataset.")
     print(f"Sample shape: {dataset[0].shape}")
-  
