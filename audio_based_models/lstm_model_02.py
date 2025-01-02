@@ -50,7 +50,7 @@ class Generator(nn.Module):
 
         # Convolutional layers for upsampling
         self.main = nn.Sequential(
-            nn.Upsample(scale_factor=(1, 7), mode='bilinear'),
+            nn.Upsample(scale_factor=(1, 7), mode='nearest'),
             nn.Conv2d(hidden_dim, 2048, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(2048),
             nn.ReLU(True),
@@ -62,25 +62,25 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(1024, 512, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(True),
@@ -91,12 +91,12 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
 
-            nn.Upsample(scale_factor=2, mode='bilinear'),
+            nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(True),
             nn.Dropout(0.5),
-            nn.Upsample(scale_factor=3, mode='bilinear'),
+            nn.Upsample(scale_factor=3, mode='nearest'),
             nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
 
 
@@ -220,7 +220,7 @@ class GAN(pl.LightningModule):
         combined_audio = (combined_audio * 32767).astype(np.int16)
 
         # Save WAV file
-        wav_path = os.path.join(r'C:\Users\Lukasz\Music\generated', f"epoch{self.current_epoch}_lstm_beats.wav")
+        wav_path = os.path.join(r'C:\Users\Lukasz\Music\generated_nearest', f"epoch{self.current_epoch}_lstm_beats.wav")
         os.makedirs(os.path.dirname(wav_path), exist_ok=True)
         write(wav_path, self.sample_rate, combined_audio)
 
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     from pytorch_lightning.callbacks import ModelCheckpoint
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     torch.manual_seed(42)
-    AUDIO_DIR = r"C:\Users\Lukasz\Music\chopped_30"
+    AUDIO_DIR = r"C:\Users\Lukasz\Music\chopped_30_piano"
     SAMPLE_RATE = 48000
     NUM_SAMPLES = 1440000
     device = "cuda" if torch.cuda.is_available() else "cpu"
