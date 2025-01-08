@@ -314,7 +314,7 @@ if __name__ == "__main__":
     from pytorch_lightning.callbacks import ModelCheckpoint
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     torch.manual_seed(42)
-    AUDIO_DIR = r"C:\Users\Lukasz\Music\chopped_30_piano"
+    AUDIO_DIR = r"C:\Users\lukas\Music\youtube_playlist_chopped"
     SAMPLE_RATE = 48000
     NUM_SAMPLES = 1440000
     device = "cuda" if torch.cuda.is_available() else "cpu"
