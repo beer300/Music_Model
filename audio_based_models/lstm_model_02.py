@@ -39,52 +39,6 @@ class Discriminator(nn.Module):
 
         return out.view(-1, 1)
     
-class AudioImpactLayer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.amplitude_scale = nn.Parameter(torch.ones(1))
-        self.dynamic_range = nn.Parameter(torch.ones(1) * 0.8)
-        self.bass_boost = nn.Parameter(torch.ones(1))
-        
-    def forward(self, x):
-        # Ensure everything is on the same device and dtype
-        device = x.device
-        dtype = x.dtype
-        
-        # Apply dynamic range compression
-        magnitude = torch.abs(x)
-        threshold = torch.tensor(0.3, device=device, dtype=dtype)
-        ratio = 1.0 - torch.clamp(self.dynamic_range, 0.0, 1.0)
-        
-        # Handle compression using where
-        compressed = torch.where(
-            magnitude > threshold,
-            threshold + (x - threshold) * ratio.to(device),
-            x
-        )
-        
-        # Apply amplitude scaling
-        processed = compressed * torch.clamp(self.amplitude_scale, 0.1, 5.0).to(device)
-        
-        # Apply bass emphasis using frequency domain transform
-        if self.bass_boost.item() > 0:
-            # Calculate boost factor before FFT
-            boost_factor = 1.0 + torch.clamp(self.bass_boost, 0.0, 1.0).to(device)
-            
-            # Convert to float32 for FFT while keeping device
-            processed_float = processed.float()
-            fft = torch.fft.rfft(processed_float, dim=-1)
-            freq_bins = fft.shape[-1]
-            cutoff = int(freq_bins * 0.1)
-            
-            # Apply boost to low frequencies
-            fft[..., :cutoff] *= boost_factor
-            
-            # Convert back to time domain and original dtype
-            processed = torch.fft.irfft(fft, n=processed.shape[-1], dim=-1).to(dtype)
-            
-        return torch.tanh(processed)  # Ensure output is in [-1, 1]
-
 class Generator(nn.Module):
     def __init__(self, latent_dim=200, hidden_dim=256):
         super().__init__()
@@ -148,9 +102,6 @@ class Generator(nn.Module):
 
             nn.Tanh()
         )
-        
-        # Add impact control layer before final output
-        self.impact_layer = AudioImpactLayer()
 
     def forward(self, z):
         # Input shape: (batch_size, latent_dim)
@@ -159,7 +110,6 @@ class Generator(nn.Module):
         lstm_out = lstm_out[:, -1, :]  # Use the last time step
         lstm_out = lstm_out.view(lstm_out.size(0), -1, 1, 1)  # Reshape for ConvTranspose2d
         x = self.main(lstm_out)
-        x = self.impact_layer(x)  # Apply impact control
         
         return x
 
@@ -240,24 +190,15 @@ class GAN(pl.LightningModule):
         return {'val_loss': d_loss + g_loss}
 
     def on_validation_epoch_end(self):
-        # Vary impact settings for different parts
-        impact_variations = [
-            {'amplitude': 1.5, 'dynamic_range': 0.6, 'bass_boost': 0.5},  # Strong impact
-            {'amplitude': 0.8, 'dynamic_range': 0.9, 'bass_boost': 0.2},  # Subtle impact
-            {'amplitude': 1.2, 'dynamic_range': 0.7, 'bass_boost': 0.4},  # Balanced impact
-        ]
-        
-        num_batches = 8
+        # Generate unique batches for the final audio
+        num_batches = 8  # More batches for complex beats
         combined_audio = []
 
         for batch_idx in range(num_batches):
-            # Cycle through impact variations
-            impact = impact_variations[batch_idx % len(impact_variations)]
-            self.set_impact(**impact)
-            
+            # Unique latent vector for each batch
             z = torch.randn(1, self.hparams.latent_dim, device=self.device)
             spec = self.generator(z)[0, 0].detach().cpu().numpy()
-            
+
             # Normalize and ensure non-repetition
             audio_data = spec.flatten()
             audio_data = np.interp(audio_data, (audio_data.min(), audio_data.max()), [-1, 1])
@@ -290,23 +231,6 @@ class GAN(pl.LightningModule):
         opt_g = torch.optim.Adam(self.generator.parameters(), lr=lr, betas=(0.5, 0.999))
         opt_d = torch.optim.Adam(self.discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
         return [opt_d, opt_g]
-    
-    def set_impact(self, amplitude=None, dynamic_range=None, bass_boost=None):
-        """Update impact parameters"""
-        if amplitude is not None:
-            self.generator.impact_layer.amplitude_scale.data = torch.tensor([amplitude])
-        if dynamic_range is not None:
-            self.generator.impact_layer.dynamic_range.data = torch.tensor([dynamic_range])
-        if bass_boost is not None:
-            self.generator.impact_layer.bass_boost.data = torch.tensor([bass_boost])
-    
-    def get_impact_settings(self):
-        """Get current impact settings"""
-        return {
-            'amplitude': self.generator.impact_layer.amplitude_scale.item(),
-            'dynamic_range': self.generator.impact_layer.dynamic_range.item(),
-            'bass_boost': self.generator.impact_layer.bass_boost.item()
-        }
 
 
 if __name__ == "__main__":
@@ -340,14 +264,6 @@ if __name__ == "__main__":
         lr=0.001,
         sample_rate=48000
     )
-    
-    # Set initial impact settings
-    model.set_impact(
-        amplitude=1.2,      # Slightly boosted overall volume
-        dynamic_range=0.75, # Moderate compression
-        bass_boost=0.35     # Moderate bass emphasis
-    )
-    
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints",
         filename="gan-{epoch:02d}-{val_g_loss:.2f}",
