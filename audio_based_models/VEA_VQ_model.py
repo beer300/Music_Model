@@ -13,118 +13,7 @@ import matplotlib.pyplot as plt
 from scipy.io.wavfile import write
 import os
 import dataset_processing as dp 
-from torch.nn import Module
-from torch.nn import functional as F
-from torch.nn import Linear, Conv2d, ConvTranspose2d, BatchNorm2d, ReLU, Tanh
-from torch.optim import Adam
-from torch.utils.data import DataLoader
-from pytorch_lightning import LightningModule, Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
-import torchaudio.transforms as transforms
-
 BATCH_SIZE = 8
-
-class VectorQuantizer(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
-        super(VectorQuantizer, self).__init__()
-        self.embedding_dim = embedding_dim
-        self.num_embeddings = num_embeddings
-        self.commitment_cost = commitment_cost
-
-        self.embeddings = nn.Embedding(self.num_embeddings, self.embedding_dim)
-        self.embeddings.weight.data.uniform_(-1/self.num_embeddings, 1/self.num_embeddings)
-
-    def forward(self, inputs):
-        # Convert inputs from BCHW -> BHWC
-        inputs = inputs.permute(0, 2, 3, 1).contiguous()
-        input_shape = inputs.shape
-
-        # Flatten input
-        flat_input = inputs.view(-1, self.embedding_dim)
-
-        # Calculate distances
-        distances = (torch.sum(flat_input**2, dim=1, keepdim=True)
-                     + torch.sum(self.embeddings.weight**2, dim=1)
-                     - 2 * torch.matmul(flat_input, self.embeddings.weight.t()))
-
-        # Encoding
-        encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
-        encodings = torch.zeros(encoding_indices.shape[0], self.num_embeddings, device=inputs.device)
-        encodings.scatter_(1, encoding_indices, 1)
-
-        # Quantize and unflatten
-        quantized = torch.matmul(encodings, self.embeddings.weight).view(input_shape)
-
-        # Loss
-        e_latent_loss = F.mse_loss(quantized.detach(), inputs)
-        q_latent_loss = F.mse_loss(quantized, inputs.detach())
-        loss = q_latent_loss + self.commitment_cost * e_latent_loss
-
-        quantized = inputs + (quantized - inputs).detach()
-        avg_probs = torch.mean(encodings, dim=0)
-        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
-
-        # Convert quantized from BHWC -> BCHW
-        return loss, quantized.permute(0, 3, 1, 2).contiguous(), perplexity
-
-class VQVAE(pl.LightningModule):
-    def __init__(self, in_channels=1, num_embeddings=512, embedding_dim=64, commitment_cost=0.25, lr=1e-3):
-        super(VQVAE, self).__init__()
-        self.save_hyperparameters()
-
-        self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, 128, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(256, embedding_dim, kernel_size=3, stride=1, padding=1)
-        )
-
-        self.vq_layer = VectorQuantizer(num_embeddings, embedding_dim, commitment_cost)
-
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(embedding_dim, 256, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(128, in_channels, kernel_size=3, stride=1, padding=1),
-            nn.Tanh()
-        )
-
-    def forward(self, x):
-        z = self.encoder(x)
-        vq_loss, quantized, perplexity = self.vq_layer(z)
-        x_recon = self.decoder(quantized)
-        # Adjust the size of x_recon to match x
-        x_recon = F.interpolate(x_recon, size=x.shape[2:])
-        return x_recon, vq_loss, perplexity
-
-    def training_step(self, batch, batch_idx):
-        x= batch
-        x_recon, vq_loss, perplexity = self(x)
-        recon_loss = F.mse_loss(x_recon, x)
-        loss = recon_loss + vq_loss
-        self.log('train_loss', loss)
-        self.log('perplexity', perplexity)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        x = batch
-        x_recon, vq_loss, perplexity = self(x)
-        recon_loss = F.mse_loss(x_recon, x)
-        loss = recon_loss + vq_loss
-        self.log('val_loss', loss)
-        self.log('val_perplexity', perplexity)
-        self.log('val_g_loss', loss)  # Log val_g_loss for ModelCheckpoint
-        return loss
-
-    def configure_optimizers(self):
-        optimizer = Adam(self.parameters(), lr=self.hparams.lr)
-        return {
-            'optimizer': optimizer,
-            'gradient_clip_val': 1.0  # Clip gradients with a maximum norm of 1.0
-        }
-
 class Discriminator(nn.Module):
     def __init__(self, in_channels=1):
         super().__init__()
@@ -341,12 +230,7 @@ class GAN(pl.LightningModule):
         lr = self.hparams.lr
         opt_g = torch.optim.Adam(self.generator.parameters(), lr=lr, betas=(0.5, 0.999))
         opt_d = torch.optim.Adam(self.discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
-        
-        # Return optimizers with gradient clipping
-        return {
-            'optimizer': [opt_d, opt_g],
-            'gradient_clip_val': 1.0  # Clip gradients with a maximum norm of 1.0
-        }
+        return [opt_d, opt_g]
 
 
 if __name__ == "__main__":
@@ -375,12 +259,10 @@ if __name__ == "__main__":
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    model = VQVAE(
-        in_channels=1,
-        num_embeddings=512,
-        embedding_dim=64,
-        commitment_cost=0.25,
-        lr=1e-3
+    model = GAN(
+        latent_dim=200,
+        lr=0.001,
+        sample_rate=48000
     )
     checkpoint_callback = ModelCheckpoint(
         dirpath="checkpoints",
