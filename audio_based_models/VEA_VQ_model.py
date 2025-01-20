@@ -25,12 +25,11 @@ import torchaudio.transforms as transforms
 BATCH_SIZE = 8
 
 class VectorQuantizer(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost, restart_threshold=0.1):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
         super(VectorQuantizer, self).__init__()
         self.embedding_dim = embedding_dim
         self.num_embeddings = num_embeddings
         self.commitment_cost = commitment_cost
-        self.restart_threshold = restart_threshold
 
         self.embeddings = nn.Embedding(self.num_embeddings, self.embedding_dim)
         self.embeddings.weight.data.uniform_(-1/self.num_embeddings, 1/self.num_embeddings)
@@ -64,13 +63,6 @@ class VectorQuantizer(nn.Module):
         quantized = inputs + (quantized - inputs).detach()
         avg_probs = torch.mean(encodings, dim=0)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
-
-        # Random restarts to prevent codebook collapse
-        usage = torch.sum(encodings, dim=0)
-        restart_indices = torch.where(usage < self.restart_threshold * encodings.shape[0])[0]
-        if len(restart_indices) > 0:
-            random_indices = torch.randint(0, flat_input.shape[0], (len(restart_indices),), device=inputs.device)
-            self.embeddings.weight.data[restart_indices] = flat_input[random_indices].to(self.embeddings.weight.data.dtype)
 
         # Convert quantized from BHWC -> BCHW
         return loss, quantized.permute(0, 3, 1, 2).contiguous(), perplexity
