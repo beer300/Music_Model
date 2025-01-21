@@ -32,6 +32,7 @@ class AudioDataset(Dataset):
         signal = self._cut_if_necessary(signal)
         signal = self._right_pad_if_necessary(signal)
         signal = self.transformation(signal)
+        signal = self._normalize(signal)  # Ensure values are between 0 and 1
         return signal
 
     def _cut_if_necessary(self, signal):
@@ -58,6 +59,12 @@ class AudioDataset(Dataset):
     def _mix_down_if_necessary(self, signal):
         if signal.shape[0] > 1:
             signal = torch.mean(signal, dim=0, keepdim=True)
+        return signal
+
+    def _normalize(self, signal):
+        signal_min = signal.min()
+        signal_max = signal.max()
+        signal = (signal - signal_min) / (signal_max - signal_min)
         return signal
 
 
