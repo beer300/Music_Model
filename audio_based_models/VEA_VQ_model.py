@@ -18,26 +18,28 @@ class Discriminator(nn.Module):
     def __init__(self, in_channels=1):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(128, 1, kernel_size=4, stride=2, padding=1),
-            nn.Sigmoid()
+            # Convolutional layers
+            nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),  # (batch_size, 16, 64, 1407)
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),                 # (batch_size, 16, 32, 703)
+
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1), # (batch_size, 32, 32, 703)
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),                 # (batch_size, 32, 16, 351)
+
+            # Fully connected layers
+            nn.Flatten(),                                         # Flatten for the dense layers
+            nn.Linear(32 * 16 * 351, 128),                       # Fully connected layer
+            nn.ReLU(),
+            nn.Linear(128, 1),                                   # Output layer
+            nn.Sigmoid()                                         # Probability output
         )
     def forward(self, x):
-      
-
+        #print(f"Discriminator input shape: {x.shape}")
         out = self.model(x)
-      
-
-        return out.view(-1, 1)
+        view =out.view(-1, 1)
+        #print(f"Discriminator output shape: {view.shape}")
+        return view 
     
 class Generator(nn.Module):
     def __init__(self, latent_dim=200, hidden_dim=256):
@@ -47,7 +49,7 @@ class Generator(nn.Module):
 
         # LSTM for temporal dependencies
         self.lstm = nn.LSTM(latent_dim, hidden_dim, num_layers=2, batch_first=True)
-
+        self.cov = nn.Conv2d(8, 1, kernel_size=3, stride=1, padding=1),
         # Convolutional layers for upsampling
         self.main = nn.Sequential(
             nn.Upsample(scale_factor=(1, 7), mode='nearest'),
@@ -97,33 +99,90 @@ class Generator(nn.Module):
             nn.ReLU(True),
             nn.Dropout(0.5),
             nn.Upsample(scale_factor=3, mode='nearest'),
-            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
-
-
+            nn.Conv2d(16, 8, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(8),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Upsample(size=(64, 1407), mode='nearest'),
+            
+        )
+        self.final = nn.Sequential(
+            
+            nn.Conv2d(8, 1, kernel_size=3, stride=1, padding=1),
             nn.Tanh()
         )
 
     def forward(self, z):
         # Input shape: (batch_size, latent_dim)
+        #print(f"z in: {z.shape}")
         z = z.unsqueeze(1)  # Add sequence dimension for LSTM (batch_size, seq_len, latent_dim)
+        #print(f"z after unsqueeze: {z.shape}")
         lstm_out, _ = self.lstm(z)  # Output: (batch_size, seq_len, hidden_dim)
+        #print(f"lstm_out: {lstm_out.shape}")
         lstm_out = lstm_out[:, -1, :]  # Use the last time step
+        #print(f"lstm_out after slicing: {lstm_out.shape}")
         lstm_out = lstm_out.view(lstm_out.size(0), -1, 1, 1)  # Reshape for ConvTranspose2d
+        #print(f"lstm_out after view: {lstm_out.shape}")
         x = self.main(lstm_out)
-        
+        #print(f"Generator output shape: {x.shape}")
+        x = self.final(x)
+        #print(f"Generator Final shape: {x.shape}")
         return x
+
+class VQVAE(nn.Module):
+    def __init__(self, in_channels=1, embedding_dim=64, num_embeddings=512):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, 128, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, embedding_dim, kernel_size=4, stride=2, padding=1),
+            nn.ReLU()
+        )
+        self.codebook = nn.Embedding(num_embeddings, embedding_dim)
+        self.codebook.weight.data.uniform_(-1/num_embeddings, 1/num_embeddings)
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(embedding_dim, 128, kernel_size=4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.Upsample(size=(64, 1407), mode='nearest'),
+            nn.Conv2d(64, in_channels, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Tanh()
+        )
+
+    def forward(self, x):
+        #print(f"in shape VQVAE: {x.shape}")
+        z_e = self.encoder(x)
+        #print(f"VQVAE encoder output shape: {z_e.shape}")
+        z_e_flattened = z_e.view(z_e.size(0), z_e.size(1), -1)
+        z_e_flattened = z_e_flattened.permute(0, 2, 1)
+        #print(f"z_e_flattened shape: {z_e_flattened.shape}")
+        distances = (torch.sum(z_e_flattened**2, dim=2, keepdim=True) 
+                    + torch.sum(self.codebook.weight**2, dim=1)
+                    - 2 * torch.matmul(z_e_flattened, self.codebook.weight.t()))
+        #print(f"distances shape: {distances.shape}")
+        encoding_indices = torch.argmin(distances, dim=-1)
+        #print(f"encoding_indices shape: {encoding_indices.shape}")
+        z_q = self.codebook(encoding_indices).permute(0, 2, 1).view(z_e.shape)
+        #print(f"z_q shape: {z_q.shape}")
+        x_recon = self.decoder(z_q)
+        #print(f"VQVAE decoder output shape: {x_recon.shape}")
+        return x_recon
 
 class GAN(pl.LightningModule):
     def __init__(self, latent_dim=200, lr=0.0002, sample_rate=48000):
         super().__init__()
         self.save_hyperparameters()
+        self.vqvae = VQVAE(in_channels=1)
         self.generator = Generator(latent_dim=self.hparams.latent_dim)
         self.discriminator = Discriminator(in_channels=1)
         self.sample_rate = sample_rate
         self.automatic_optimization = False
 
     def forward(self, z):
-        return self.generator(z)
+        output = self.generator(z)
+        #print(f"GAN forward output shape: {output.shape}")
+        return output
 
     def adversarial_loss(self, y_hat, y):
         return F.binary_cross_entropy_with_logits(y_hat, y)
@@ -132,16 +191,19 @@ class GAN(pl.LightningModule):
         opt_d, opt_g = self.optimizers()
         real_imgs = batch
 
+        # VQ-VAE encoding and decoding
+        x_recon = self.vqvae(real_imgs)
+
         # Generate unique latent vectors for each sample
         z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, device=self.device)
         fake_imgs = self(z).detach()
 
         # Train Discriminator
-        y_hat_real = self.discriminator(real_imgs)
+        y_hat_recon = self.discriminator(x_recon)
         y_hat_fake = self.discriminator(fake_imgs)
-        real_loss = self.adversarial_loss(y_hat_real, torch.ones_like(y_hat_real))
+        recon_loss = self.adversarial_loss(y_hat_recon, torch.ones_like(y_hat_recon))
         fake_loss = self.adversarial_loss(y_hat_fake, torch.zeros_like(y_hat_fake))
-        d_loss = 0.5 * (real_loss + fake_loss)
+        d_loss = 0.5 * (recon_loss + fake_loss)
         self.manual_backward(d_loss)
         opt_d.step()
         opt_d.zero_grad()
@@ -150,6 +212,7 @@ class GAN(pl.LightningModule):
         z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, device=self.device)
         fake_imgs = self(z)
         y_hat = self.discriminator(fake_imgs)
+        
         g_loss = self.adversarial_loss(y_hat, torch.ones_like(y_hat))
         self.manual_backward(g_loss)
         opt_g.step()
@@ -165,20 +228,21 @@ class GAN(pl.LightningModule):
         z = torch.randn(batch_length, self.hparams.latent_dim, device=self.device)
 
         # Generate fake images
-        fake_imgs = self(z)
+        fake_imgs = self.generator(z)
 
         # Scale height (amplitude) dynamically
         scale_factor = torch.rand(1).item() * 2 + 0.5
         fake_imgs = fake_imgs * scale_factor
 
         # Use actual batch size for real images
-        y_hat_real = self.discriminator(batch[:batch_length])
+        x_recon = self.vqvae(batch[:batch_length])
+        y_hat_recon = self.discriminator(x_recon)
         y_hat_fake = self.discriminator(fake_imgs)
 
         # Calculate losses
-        real_loss = self.adversarial_loss(y_hat_real, torch.ones_like(y_hat_real))
+        recon_loss = self.adversarial_loss(y_hat_recon, torch.ones_like(y_hat_recon))
         fake_loss = self.adversarial_loss(y_hat_fake, torch.zeros_like(y_hat_fake))
-        d_loss = 0.5 * (real_loss + fake_loss)
+        d_loss = 0.5 * (recon_loss + fake_loss)
 
         # Generator loss
         g_loss = self.adversarial_loss(y_hat_fake, torch.ones_like(y_hat_fake))
@@ -220,7 +284,7 @@ class GAN(pl.LightningModule):
         combined_audio = (combined_audio * 32767).astype(np.int16)
 
         # Save WAV file
-        wav_path = os.path.join(r'C:\Users\Lukasz\Music\generated_nearest', f"epoch{self.current_epoch}_lstm_beats.wav")
+        wav_path = os.path.join(r'C:\Users\lukas\Music\generated_nearest', f"epoch{self.current_epoch}_lstm_beats.wav")
         os.makedirs(os.path.dirname(wav_path), exist_ok=True)
         write(wav_path, self.sample_rate, combined_audio)
 
