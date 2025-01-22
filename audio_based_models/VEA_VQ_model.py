@@ -13,33 +13,49 @@ import matplotlib.pyplot as plt
 from scipy.io.wavfile import write
 import os
 import dataset_processing as dp 
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 class Discriminator(nn.Module):
     def __init__(self, in_channels=1):
         super().__init__()
         self.model = nn.Sequential(
             # Convolutional layers
-            nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),  # (batch_size, 16, 64, 1407)
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),                 # (batch_size, 16, 32, 703)
+            nn.Conv2d(in_channels, 16, kernel_size=3, stride=1, padding=1),  # (batch_size, 16, 64, 1407)
+            nn.LeakyReLU(0.2),
+            nn.MaxPool2d(kernel_size=2, stride=2),                           # (batch_size, 16, 32, 703)
 
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1), # (batch_size, 32, 32, 703)
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),                 # (batch_size, 32, 16, 351)
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),           # (batch_size, 32, 32, 703)
+            nn.LeakyReLU(0.2),
+            nn.MaxPool2d(kernel_size=2, stride=2),                           # (batch_size, 32, 16, 351)
+
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),           # (batch_size, 64, 16, 351)
+            nn.LeakyReLU(0.2),
+            nn.MaxPool2d(kernel_size=2, stride=2),                           # (batch_size, 64, 8, 175)
+
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),          # (batch_size, 128, 8, 175)
+            nn.LeakyReLU(0.2),
+            nn.MaxPool2d(kernel_size=2, stride=2),                           # (batch_size, 128, 4, 87)
+
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),         # (batch_size, 256, 4, 87)
+            nn.LeakyReLU(0.2),
+            nn.MaxPool2d(kernel_size=2, stride=2),                           # (batch_size, 256, 2, 43)
 
             # Fully connected layers
-            nn.Flatten(),                                         # Flatten for the dense layers
-            nn.Linear(32 * 16 * 351, 128),                       # Fully connected layer
-            nn.ReLU(),
-            nn.Linear(128, 1),                                   # Output layer
-            nn.Sigmoid()                                         # Probability output
+            nn.Flatten(),                                                   # Flatten for the dense layers
+            nn.Linear(256 * 2 * 43, 512),                                   # Additional fully connected layer
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 256),                                            # Fully connected layer
+            nn.LeakyReLU(0.2),
+            nn.Linear(256, 64),                                             # Fully connected layer
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 1),                                               # Output layer
+            nn.Sigmoid()                                                    # Probability output
         )
+
     def forward(self, x):
-        #print(f"Discriminator input shape: {x.shape}")
+        # Forward pass through the model
         out = self.model(x)
-        view =out.view(-1, 1)
-        #print(f"Discriminator output shape: {view.shape}")
-        return view 
+        
+        return out
     
 class Generator(nn.Module):
     def __init__(self, latent_dim=200, hidden_dim=256):
@@ -130,8 +146,9 @@ class Generator(nn.Module):
         return x
 
 class VQVAE(nn.Module):
-    def __init__(self, in_channels=1, embedding_dim=64, num_embeddings=512):
+    def __init__(self, in_channels=1, embedding_dim=64, num_embeddings=512, num_restarts=3):
         super().__init__()
+        self.num_restarts = num_restarts
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, 128, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
@@ -151,41 +168,49 @@ class VQVAE(nn.Module):
         )
 
     def forward(self, x):
-        #print(f"in shape VQVAE: {x.shape}")
-        z_e = self.encoder(x)
-        #print(f"VQVAE encoder output shape: {z_e.shape}")
-        z_e_flattened = z_e.view(z_e.size(0), z_e.size(1), -1)
-        z_e_flattened = z_e_flattened.permute(0, 2, 1)
-        #print(f"z_e_flattened shape: {z_e_flattened.shape}")
-        distances = (torch.sum(z_e_flattened**2, dim=2, keepdim=True) 
-                    + torch.sum(self.codebook.weight**2, dim=1)
-                    - 2 * torch.matmul(z_e_flattened, self.codebook.weight.t()))
-        #print(f"distances shape: {distances.shape}")
-        encoding_indices = torch.argmin(distances, dim=-1)
-        #print(f"encoding_indices shape: {encoding_indices.shape}")
-        z_q = self.codebook(encoding_indices).permute(0, 2, 1).view(z_e.shape)
-        #print(f"z_q shape: {z_q.shape}")
-        x_recon = self.decoder(z_q)
-        #print(f"VQVAE decoder output shape: {x_recon.shape}")
-        return x_recon
+        best_loss = float('inf')
+        best_x_recon = None
+
+        for _ in range(self.num_restarts):
+            z_e = self.encoder(x)
+            z_e_flattened = z_e.view(z_e.size(0), z_e.size(1), -1)
+            z_e_flattened = z_e_flattened.permute(0, 2, 1)
+            distances = (torch.sum(z_e_flattened**2, dim=2, keepdim=True) 
+                        + torch.sum(self.codebook.weight**2, dim=1)
+                        - 2 * torch.matmul(z_e_flattened, self.codebook.weight.t()))
+            encoding_indices = torch.argmin(distances, dim=-1)
+            z_q = self.codebook(encoding_indices).permute(0, 2, 1).view(z_e.shape)
+            x_recon = self.decoder(z_q)
+            loss = F.mse_loss(x_recon, x)
+
+            if loss < best_loss:
+                best_loss = loss
+                best_x_recon = x_recon
+
+        return best_x_recon
 
 class GAN(pl.LightningModule):
-    def __init__(self, latent_dim=200, lr=0.0002, sample_rate=48000):
+    def __init__(self, latent_dim=200, lr=0.0002, sample_rate=48000, l2_penalty=0.01, num_restarts=3):
         super().__init__()
         self.save_hyperparameters()
-        self.vqvae = VQVAE(in_channels=1)
+        self.vqvae = VQVAE(in_channels=1, num_restarts=num_restarts)
         self.generator = Generator(latent_dim=self.hparams.latent_dim)
         self.discriminator = Discriminator(in_channels=1)
         self.sample_rate = sample_rate
+        self.l2_penalty = l2_penalty
         self.automatic_optimization = False
 
     def forward(self, z):
-        output = self.generator(z)
-        #print(f"GAN forward output shape: {output.shape}")
-        return output
+        return self.generator(z)
 
     def adversarial_loss(self, y_hat, y):
         return F.binary_cross_entropy_with_logits(y_hat, y)
+
+    def l2_regularization(self, model):
+        l2_loss = 0.0
+        for param in model.parameters():
+            l2_loss += torch.sum(param ** 2)
+        return l2_loss
 
     def training_step(self, batch, batch_idx):
         opt_d, opt_g = self.optimizers()
@@ -203,7 +228,7 @@ class GAN(pl.LightningModule):
         y_hat_fake = self.discriminator(fake_imgs)
         recon_loss = self.adversarial_loss(y_hat_recon, torch.ones_like(y_hat_recon))
         fake_loss = self.adversarial_loss(y_hat_fake, torch.zeros_like(y_hat_fake))
-        d_loss = 0.5 * (recon_loss + fake_loss)
+        d_loss = 0.5 * (recon_loss + fake_loss) + self.l2_penalty * self.l2_regularization(self.discriminator)
         self.manual_backward(d_loss)
         opt_d.step()
         opt_d.zero_grad()
@@ -212,8 +237,7 @@ class GAN(pl.LightningModule):
         z = torch.randn(real_imgs.size(0), self.hparams.latent_dim, device=self.device)
         fake_imgs = self(z)
         y_hat = self.discriminator(fake_imgs)
-        
-        g_loss = self.adversarial_loss(y_hat, torch.ones_like(y_hat))
+        g_loss = self.adversarial_loss(y_hat, torch.ones_like(y_hat)) + self.l2_penalty * self.l2_regularization(self.generator)
         self.manual_backward(g_loss)
         opt_g.step()
         opt_g.zero_grad()
@@ -224,7 +248,6 @@ class GAN(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         # Generate latent vectors similar to training step
         batch_length = torch.randint(4, 8, (1,)).item()
-        # Changed: Remove extra dimensions to match training
         z = torch.randn(batch_length, self.hparams.latent_dim, device=self.device)
 
         # Generate fake images
@@ -242,10 +265,10 @@ class GAN(pl.LightningModule):
         # Calculate losses
         recon_loss = self.adversarial_loss(y_hat_recon, torch.ones_like(y_hat_recon))
         fake_loss = self.adversarial_loss(y_hat_fake, torch.zeros_like(y_hat_fake))
-        d_loss = 0.5 * (recon_loss + fake_loss)
+        d_loss = 0.5 * (recon_loss + fake_loss) + self.l2_penalty * self.l2_regularization(self.discriminator)
 
         # Generator loss
-        g_loss = self.adversarial_loss(y_hat_fake, torch.ones_like(y_hat_fake))
+        g_loss = self.adversarial_loss(y_hat_fake, torch.ones_like(y_hat_fake)) + self.l2_penalty * self.l2_regularization(self.generator)
 
         # Log metrics
         self.log('val_d_loss', d_loss, prog_bar=True)
