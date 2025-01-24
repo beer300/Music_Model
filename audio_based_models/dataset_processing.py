@@ -2,6 +2,7 @@ import os
 import torch
 from torch.utils.data import Dataset
 import torchaudio
+import torch.nn as nn
 
 class AudioDataset(Dataset):
     def __init__(self,
@@ -32,7 +33,7 @@ class AudioDataset(Dataset):
         signal = self._cut_if_necessary(signal)
         signal = self._right_pad_if_necessary(signal)
         signal = self.transformation(signal)
-        signal = self._normalize(signal)  # Ensure values are between 0 and 1
+        signal = self._normalize(signal)  # Ensure values are between -1 and 1
         return signal
 
     def _cut_if_necessary(self, signal):
@@ -64,7 +65,7 @@ class AudioDataset(Dataset):
     def _normalize(self, signal):
         signal_min = signal.min()
         signal_max = signal.max()
-        signal = (signal - signal_min) / (signal_max - signal_min)
+        signal = (signal - signal_min) / (signal_max - signal_min) * 2 - 1  # Scale to [-1, 1]
         return signal
 
 
@@ -83,9 +84,15 @@ if __name__ == "__main__":
         n_mels=64
     )
 
+    # Add normalization transform
+    transform = nn.Sequential(
+        mel_spectrogram,
+        lambda x: (x - x.min()) / (x.max() - x.min()) * 2 - 1  # Scale to [-1, 1]
+    )
+
     dataset = AudioDataset(
         AUDIO_DIR,
-        mel_spectrogram,
+        transform,
         SAMPLE_RATE,
         NUM_SAMPLES,
         device
