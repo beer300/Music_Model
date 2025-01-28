@@ -14,30 +14,38 @@ from scipy.io.wavfile import write
 import os
 import dataset_processing as dp 
 BATCH_SIZE = 8
+def spectral_norm(module):
+    return nn.utils.spectral_norm(module, eps=1e-4)
+
 class Discriminator(nn.Module):
-    def __init__(self, in_channels=1):
+    def __init__(self):
         super().__init__()
         self.model = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(16, 32, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(32),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(128, 1, kernel_size=4, stride=2, padding=1),
-            nn.Sigmoid()
+            spectral_norm(nn.Conv2d(1, 64, 4, stride=2, padding=1)),
+            nn.LeakyReLU(0.2),
+            
+            spectral_norm(nn.Conv2d(64, 128, 4, stride=2, padding=1)),
+            nn.InstanceNorm2d(128),
+            nn.LeakyReLU(0.2),
+            
+            spectral_norm(nn.Conv2d(128, 256, 4, stride=2, padding=1)),
+            nn.InstanceNorm2d(256),
+            nn.LeakyReLU(0.2),
+            
+            spectral_norm(nn.Conv2d(256, 512, 4, stride=2, padding=1)),
+            nn.InstanceNorm2d(512),
+            nn.LeakyReLU(0.2),
+            
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            spectral_norm(nn.Linear(512, 1))
         )
+
     def forward(self, x):
-      
-
-        out = self.model(x)
-      
-
-        return out.view(-1, 1)
+        print(f"shape", x.shape)
+        x=self.model(x)
+        print(f"shape_out ", x.shape)
+        return x
     
 class Generator(nn.Module):
     def __init__(self, latent_dim=200, hidden_dim=256):
@@ -118,7 +126,7 @@ class GAN(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.generator = Generator(latent_dim=self.hparams.latent_dim)
-        self.discriminator = Discriminator(in_channels=1)
+        self.discriminator = Discriminator()
         self.sample_rate = sample_rate
         self.automatic_optimization = False
 
