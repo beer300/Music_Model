@@ -13,39 +13,57 @@ import matplotlib.pyplot as plt
 from scipy.io.wavfile import write
 import os
 import dataset_processing as dp 
+from dataset_processing import add_channel_dim, remove_channel_dim
+from torch_mdct import IMDCT, MDCT, vorbis
+mdct = MDCT(win_length=1024, window_fn=vorbis, window_kwargs=None, center=True)
+imdct = IMDCT(win_length=1024, window_fn=vorbis, window_kwargs=None, center=True)
 BATCH_SIZE = 8
-def spectral_norm(module):
-    return nn.utils.spectral_norm(module, eps=1e-4)
+
+
 
 class Discriminator(nn.Module):
     def __init__(self):
         super().__init__()
         self.model = nn.Sequential(
-            spectral_norm(nn.Conv2d(1, 64, 4, stride=2, padding=1)),
+            # Input: 1xHxW (typically 1x64x64 or 1x28x28)
+            nn.Conv2d(1, 64, 4, stride=2, padding=1),
             nn.LeakyReLU(0.2),
             
-            spectral_norm(nn.Conv2d(64, 128, 4, stride=2, padding=1)),
-            nn.InstanceNorm2d(128),
+            nn.Conv2d(64, 128, 4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2),
             
-            spectral_norm(nn.Conv2d(128, 256, 4, stride=2, padding=1)),
-            nn.InstanceNorm2d(256),
+            nn.Conv2d(128, 256, 4, stride=2, padding=1),
+            nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2),
             
-            spectral_norm(nn.Conv2d(256, 512, 4, stride=2, padding=1)),
-            nn.InstanceNorm2d(512),
+            nn.Conv2d(256, 512, 4, stride=2, padding=1),
+            nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2),
             
+            # Additional convolutional layer for deeper features
+            nn.Conv2d(512, 1024, 4, stride=2, padding=1),
+            nn.BatchNorm2d(1024),
+            nn.LeakyReLU(0.2),
+
+            # Feature aggregation
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            spectral_norm(nn.Linear(512, 1))
+            
+            # Enhanced classification head
+            nn.Linear(1024, 512),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.3),
+            nn.Linear(512, 1)
         )
 
+        # Apply spectral normalization to convolutional layers
+        for layer in self.model:
+            if isinstance(layer, nn.Conv2d):
+                nn.utils.spectral_norm(layer)
+
     def forward(self, x):
-        print(f"shape", x.shape)
-        x=self.model(x)
-        print(f"shape_out ", x.shape)
-        return x
+        return self.model(x)
     
 class Generator(nn.Module):
     def __init__(self, latent_dim=200, hidden_dim=256):
@@ -58,57 +76,79 @@ class Generator(nn.Module):
 
         # Convolutional layers for upsampling
         self.main = nn.Sequential(
-            nn.Upsample(scale_factor=(1, 7), mode='nearest'),
+            nn.Upsample(scale_factor=(2, 7), mode='nearest'),
             nn.Conv2d(hidden_dim, 2048, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(2048),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
-            
+            # 2 ,7
             
             nn.ConvTranspose2d(2048, 1024, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(1024),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
+            #2, 14
 
             nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(1024, 512, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(512),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
+            #4, 28
 
             nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(256),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
+            #8, 56
 
             nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
+            #16, 112
 
             nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
+            #32, 224
 
-            nn.ConvTranspose2d(64, 32, kernel_size=(1,22), stride=1, padding=1),
+            nn.ConvTranspose2d(64, 32, kernel_size=(3), stride=(2), padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
+            #64, 224
 
             nn.Upsample(scale_factor=2, mode='nearest'),
             nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(16),
-            nn.ReLU(True),
+            nn.LeakyReLU(True),
             nn.Dropout(0.5),
-            nn.Upsample(scale_factor=3, mode='nearest'),
-            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
+            #128, 448
+            nn.Upsample(scale_factor=(2,3), mode='nearest'),
+            nn.Conv2d(16, 8, kernel_size=3, stride=1, padding=1),
+            #256, 1344
+            nn.BatchNorm2d(8),
+            nn.LeakyReLU(True),
+            nn.Dropout(0.5),
 
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(8, 4, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(4),
+            nn.LeakyReLU(True),
+            nn.Dropout(0.5),
 
-            nn.Tanh()
+            nn.Upsample(size=(512, 2586), mode='nearest'),
+            nn.Conv2d(4, 1, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(True),
+            nn.Dropout(0.5),
+            
+
+          
         )
 
     def forward(self, z):
@@ -122,7 +162,7 @@ class Generator(nn.Module):
         return x
 
 class GAN(pl.LightningModule):
-    def __init__(self, latent_dim=200, lr=0.0002, sample_rate=48000):
+    def __init__(self, latent_dim=200, lr=0.0002, sample_rate=44100):
         super().__init__()
         self.save_hyperparameters()
         self.generator = Generator(latent_dim=self.hparams.latent_dim)
@@ -217,22 +257,29 @@ class GAN(pl.LightningModule):
 
             # Append to the final audio stream
             combined_audio.append(audio_data)
+            
 
         # Concatenate all unique parts
-        combined_audio = np.concatenate(combined_audio)
+        #combined_audio = np.concatenate(combined_audio)
+        z = torch.randn(1, self.hparams.latent_dim, device=self.device)
+
 
         # Normalize and scale to fit the total duration
-        duration = 30  # seconds
-        total_samples = self.sample_rate * duration
-        combined_audio = np.tile(combined_audio, int(np.ceil(total_samples / len(combined_audio))))[:total_samples]
-        combined_audio = (combined_audio * 32767).astype(np.int16)
+            # Normalize and scale to fit the total duration
 
-        # Save WAV file
-        wav_path = os.path.join(r'C:\Users\Lukasz\Music\generated_nearest', f"epoch{self.current_epoch}_lstm_beats.wav")
-        os.makedirs(os.path.dirname(wav_path), exist_ok=True)
-        write(wav_path, self.sample_rate, combined_audio)
 
-        print(f"[INFO] Saved audio with unique LSTM beats to {wav_path}")
+        # Save a single generated waveform for debugging
+        z = torch.randn(1, self.hparams.latent_dim, device=self.device)
+        spec = self.generator(z)  # Shape: [batch_size, num_channels, num_samples]
+        spec = spec[0]  # Extract the first waveform in the batch (shape: [num_channels, num_samples])
+        spec_waveform = imdct(spec.cpu())
+        print("MDCT coeff range:", spec.min(), spec.max())
+        print(f"spec shape", spec.shape)
+        print(f"spec_waveform shape", spec_waveform.shape)
+        wav_path_diff_conversion = os.path.join(r'C:\Users\lukas\Music\generated_nearest', f"epoch{self.current_epoch}_reconstructed.wav")
+        if os.path.exists(wav_path_diff_conversion):
+            os.remove(wav_path_diff_conversion)
+        torchaudio.save(wav_path_diff_conversion, spec_waveform, self.sample_rate)
 
     def configure_optimizers(self):
         lr = self.hparams.lr
@@ -246,22 +293,14 @@ if __name__ == "__main__":
     from pytorch_lightning.callbacks import ModelCheckpoint
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     torch.manual_seed(42)
-    AUDIO_DIR = r"C:\Users\lukas\Music\youtube_playlist_chopped"
+    AUDIO_DIR = r"C:\Users\lukas\Music\youtube_playlist_chopped — kopia"
     SAMPLE_RATE = 48000
     NUM_SAMPLES = 1440000
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    mel_spectrogram = torchaudio.transforms.MelSpectrogram(
-        sample_rate=SAMPLE_RATE,
-        n_fft=1024,
-        hop_length=1024,
-        n_mels=64
-    )
+    
     full_dataset = dp.AudioDataset(
                             AUDIO_DIR,
-                            mel_spectrogram,
-                            SAMPLE_RATE,
-                            NUM_SAMPLES,
-                            device)
+                            )
     train_size = int(0.8 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
@@ -269,7 +308,7 @@ if __name__ == "__main__":
     val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
     model = GAN(
         latent_dim=200,
-        lr=0.001,
+        lr=0.0002,
         sample_rate=48000
     )
     checkpoint_callback = ModelCheckpoint(
